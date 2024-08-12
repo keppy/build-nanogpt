@@ -283,7 +283,7 @@ for i in range(50):
 
 import sys
 
-# sys.exit(0)
+sys.exit(0)
 # prefix tokens
 model.eval()
 num_return_sequences = 5
