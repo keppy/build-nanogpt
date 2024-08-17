@@ -304,6 +304,7 @@ train_loader = DataLoaderLite(B=16, T=1024)
 # get logits
 model = GPT(GPTConfig(vocab_size=50304))
 model.to(device)
+model = torch.compile(model)
 
 # optimize!
 optimizer = torch.optim.AdamW(model.parameters(), lr=3e-4)
