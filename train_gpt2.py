@@ -6,6 +6,7 @@ from dataclasses import dataclass
 import torch
 import torch.nn as nn
 from torch.nn import functional as F
+from hellaswag import render_example, iterate_examples
 
 
 # ---------------------------
@@ -32,13 +33,6 @@ class CausalSelfAttention(nn.Module):
         # regularization
         self.n_head = config.n_head
         self.n_embd = config.n_embd
-        # not really a 'bias', more of a mask, but following the OpenAI/HF naming though
-        self.register_buffer(
-            "bias",
-            torch.tril(torch.ones(config.block_size, config.block_size)).view(
-                1, 1, config.block_size, config.block_size
-            ),
-        )
 
     def forward(self, x):
         B, T, C = (
@@ -71,20 +65,6 @@ class CausalSelfAttention(nn.Module):
         # output projection
         y = self.c_proj(y)
         return y
-
-
-# ---------------------------
-class LayerNorm(nn.Module):
-    """LayerNorm but with an optional bias. PyTorch doesn't support simply bias=False"""
-
-    def __init__(self, ndim, bias):
-        super().__init__()
-        self.weight = nn.Parameter(torch.ones(ndim))
-        self.bias = nn.Parameter(torch.zeros(ndim)) if bias else None
-
-    def forward(self, input):
-        return F.layer_norm(input, self.weight.shape, self.weight, self.bias, 1e-5)
-
 
 # ----------------------------
 class MLP(nn.Module):
@@ -410,6 +390,8 @@ torch.manual_seed(1337)
 if torch.cuda.is_available():
     torch.cuda.manual_seed(1337)
 
+enc = tiktoken.get_encoding("gpt2")
+
 total_batch_size = 524288  # 2**19, ~0.5M tokens
 B = 16  # microbatch size
 T = 1024  # sequence length
@@ -430,10 +412,17 @@ val_loader = DataLoaderLite(
 
 torch.set_float32_matmul_precision("high")
 
-# get logits
+# create model
 model = GPT(GPTConfig(vocab_size=50304))
+# model = GPT.from_pretrained("gpt2") # or init from OpenAI GPT-2
 model.to(device)
-model = torch.compile(model)
+use_compile = True # torch.compile interferes with HellaSwag eval and Generation. TODO fix
+if use_compile:
+    model = torch.compile(model)
+if ddp:
+    model = DDP(model, device_ids=[ddp_local_rank])
+raw_model = model.module if ddp else model # always contains the "raw" unwrapped model
+
 
 max_lr = 6e-4 * 2
 min_lr = max_lr * 0.01
@@ -508,7 +497,7 @@ for step in range(max_steps):
                 torch.save(checkpoint, checkpoint_path)
 
     # once in a while evaluate hellaswag
-    if (step % 250 == 0 or last_step) and (not use_compile):
+    if (step % 5 == 0 or last_step):
         num_correct_norm = 0
         num_total = 0
         for i, example in enumerate(iterate_examples("val")):
